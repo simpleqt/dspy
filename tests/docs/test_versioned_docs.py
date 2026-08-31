@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from docs.scripts.build_docs import optimize_site, patched_config, scope_root_relative_urls, stable_version
-from docs.scripts.detect_versioned_deployment import is_versioned_deployment
+from docs.scripts.detect_versioned_deployment import deployment_state, is_versioned_deployment
 from docs.scripts.publish_versioned_docs import publish_site, version_tuple
 
 requires_mike = pytest.mark.skipif(importlib.util.find_spec("mike") is None, reason="Mike is a docs-only dependency")
@@ -169,7 +169,7 @@ def test_mike_current_is_mutable_and_default(tmp_path):
         "identifier": "current",
         "title": "Current",
         "aliases": [],
-        "renderer": "material",
+        "renderer": "zensical",
         "package_source": "working-tree",
         "mutable": True,
         "default": True,
@@ -207,6 +207,13 @@ def test_staged_candidate_does_not_activate_mike_until_promoted(tmp_path):
     # The reviewed deployment-repository PR promotes the candidate to master.
     subprocess.run(["git", "checkout", "versioned-docs", "--", "versions.json"], cwd=repository, check=True)
     assert is_versioned_deployment(repository)
+    assert deployment_state(repository) == (True, "versioned-docs")
+
+    inventory = json.loads((repository / "versions.json").read_text())
+    current = next(entry for entry in inventory if entry["version"] == "current")
+    current["properties"]["renderer"] = "zensical"
+    (repository / "versions.json").write_text(json.dumps(inventory))
+    assert deployment_state(repository) == (True, "master")
 
 
 @requires_mike
@@ -222,7 +229,7 @@ def test_mike_removes_stale_unversioned_redirects(tmp_path):
         "identifier": "current",
         "title": "Current",
         "aliases": [],
-        "renderer": "material",
+        "renderer": "zensical",
         "package_source": "working-tree",
         "mutable": True,
         "default": True,

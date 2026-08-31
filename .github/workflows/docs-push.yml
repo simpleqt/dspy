@@ -33,7 +33,7 @@ jobs:
         run: |
           cd docs
           pip install -r requirements.txt
-          python scripts/build_docs.py current --renderer material
+          python scripts/build_docs.py current --renderer zensical
 
   detect-versioned-deployment:
     if: github.event_name == 'push' && github.repository == 'stanfordnlp/dspy'
@@ -42,6 +42,7 @@ jobs:
       contents: read
     outputs:
       enabled: ${{ steps.deployment.outputs.enabled }}
+      target: ${{ steps.deployment.outputs.target }}
     steps:
       - name: Check out deployment tooling
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -135,18 +136,19 @@ jobs:
           python docs/scripts/build_docs.py current \
             --config docs/mkdocs.yml \
             --output current-site \
-            --renderer material
+            --renderer zensical
       - name: Check out documentation deployment
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: krypticmouse/dspy-docs
-          ref: master
+          ref: ${{ needs.detect-versioned-deployment.outputs.target }}
           path: docs-deployment
           persist-credentials: false
           token: ${{ secrets.GH_PAT }} # zizmor: ignore[secrets-outside-env]
       - name: Publish Current through Mike
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          TARGET: ${{ needs.detect-versioned-deployment.outputs.target }}
         run: |
           gh auth setup-git
           git -C docs-deployment config user.name github-actions
@@ -156,9 +158,9 @@ jobs:
             --site current-site \
             --identifier current \
             --title Current \
-            --renderer material \
+            --renderer zensical \
             --package-source working-tree \
-            --branch master \
+            --branch "$TARGET" \
             --mutable \
             --default
-          git -C docs-deployment push origin master
+          git -C docs-deployment push origin "$TARGET"

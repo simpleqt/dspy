@@ -14,8 +14,9 @@ conveniences and are hidden from the picker. Mike owns `versions.json`, the
 default redirect, aliases, and version directories on the generated
 `versioned-docs` branch in `krypticmouse/dspy-docs`.
 
-Historical snapshots use Material for MkDocs. Current records its renderer in
-`versions.json`; stored static versions do not need to share a renderer.
+Historical snapshots use Material for MkDocs, while Current uses Zensical.
+Stored static versions do not need to share a renderer. The parity gate below
+defines the required compatibility between them.
 
 ## Deployment and promotion
 
@@ -23,6 +24,12 @@ Generated candidates are written to the `versioned-docs` branch and promoted
 to production `master` through reviewed pull requests in
 `krypticmouse/dspy-docs`. Production's `versions.json` is the activation marker
 for Mike publication; a candidate branch alone never changes production.
+
+The Current entry's renderer property controls publication. A production
+renderer of `material` sends Zensical Current to `versioned-docs` for review; a
+renderer of `zensical` sends Current updates to production `master`. Changing
+renderers therefore requires a reviewed deployment-repository pull request,
+and the metadata acts as executable promotion state.
 
 Existing unversioned page URLs remain valid. Publishing Current generates root
 redirect pages such as `/api/` → `/current/api/`, and each build scopes
@@ -73,3 +80,32 @@ builds remove source maps and conservatively minify HTML while preserving
 whitespace-sensitive elements. Git deduplicates byte-identical objects in the
 deployment repository. Browsers request only the selected page and its assets;
 they do not download the aggregate repository.
+
+## Zensical parity gate
+
+Zensical does not directly run every plugin from the Material pipeline. The
+production builder preserves their outputs at explicit compatibility
+boundaries:
+
+| Existing feature | Zensical path |
+| --- | --- |
+| API reference | the same `mkdocstrings` configuration and public symbols |
+| Notebooks | pre-render with `nbconvert` in a disposable source tree |
+| Redirects | emit equivalent static redirects after rendering |
+| Social cards | generate per-page cards and inject matching metadata |
+| `llms.txt` | generate from the same configured source inventory |
+| Build-time statistics | run the existing fetcher before rendering |
+| Search | use Disco and require route coverage plus representative discoverability |
+| Custom tabs override | use Zensical's built-in tabs implementation |
+
+The static parity gate compares all generated routes, article headings and
+content, API symbols, notebooks, redirects, metadata, social-card availability,
+`llms.txt`, search inventory, assets, sitemap, navigation, and version-picker
+inventory. The browser gate exercises desktop and mobile navigation, search,
+dark-mode persistence, announcements, footer links, homepage and tutorial
+interactions, custom scripts, and picker behavior.
+
+Screenshots and pixel-difference measurements are review artifacts rather than
+pass/fail criteria. Zensical may differ in typography, spacing, wrapping,
+navigation fitting, code rendering, search ranking, and social-card appearance
+without dropping a feature.
