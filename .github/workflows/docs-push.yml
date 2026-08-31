@@ -153,14 +153,23 @@ jobs:
           gh auth setup-git
           git -C docs-deployment config user.name github-actions
           git -C docs-deployment config user.email github-actions@github.com
-          python docs/scripts/publish_versioned_docs.py \
-            --repository docs-deployment \
-            --site current-site \
-            --identifier current \
-            --title Current \
-            --renderer zensical \
-            --package-source working-tree \
-            --branch "$TARGET" \
-            --mutable \
-            --default
-          git -C docs-deployment push origin "$TARGET"
+          for attempt in 1 2 3; do
+            git -C docs-deployment fetch origin "$TARGET"
+            git -C docs-deployment reset --hard "origin/$TARGET"
+            python docs/scripts/publish_versioned_docs.py \
+              --repository docs-deployment \
+              --site current-site \
+              --identifier current \
+              --title Current \
+              --renderer zensical \
+              --package-source working-tree \
+              --branch "$TARGET" \
+              --mutable \
+              --default
+            if git -C docs-deployment push origin "$TARGET"; then
+              exit 0
+            fi
+            sleep $((2 ** attempt + RANDOM % 5))
+          done
+          echo "::error::Documentation deployment changed repeatedly; rerun this workflow"
+          exit 1

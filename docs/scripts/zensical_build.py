@@ -113,7 +113,16 @@ def fetch_stats(project: Path) -> dict[str, object]:
         raise RuntimeError(f"cannot load {hook}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return dict(module.fetch_stats())
+    if hasattr(module, "fetch_stats"):
+        return dict(module.fetch_stats())
+
+    # DSPy 3.3.0 and 3.3.1 expose only the original MkDocs hook contract.
+    config: dict[str, object] = {"extra": {}}
+    configured = module.on_config(config) or config
+    stats = configured.get("extra", {}).get("stats")
+    if not isinstance(stats, dict):
+        raise RuntimeError(f"{hook} did not provide extra.stats")
+    return stats
 
 
 def prepare_config(

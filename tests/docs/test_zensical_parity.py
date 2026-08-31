@@ -8,6 +8,7 @@ from docs.scripts.build_docs import install_shared_header_styles
 from docs.scripts.zensical_build import (
     add_missing_titles,
     convert_notebooks,
+    fetch_stats,
     generate_llms,
     load_config,
     nav_entries,
@@ -306,3 +307,15 @@ def test_public_stats_api_does_not_leak_cache_metadata(tmp_path, monkeypatch):
     assert fetched == {"stars": "10k"}
     assert stats_hook.fetch_stats() == {"stars": "10k"}
     assert set(json.loads(cache.read_text())) == {"stars", "_ts", "_cache_version"}
+
+
+def test_zensical_stats_supports_historical_mkdocs_hook(tmp_path):
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "fetch_stats.py").write_text(
+        "def on_config(config):\n"
+        "    config.setdefault('extra', {})['stats'] = {'stars': 'historical'}\n"
+        "    return config\n"
+    )
+
+    assert fetch_stats(tmp_path) == {"stars": "historical"}

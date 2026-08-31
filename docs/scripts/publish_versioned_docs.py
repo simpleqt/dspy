@@ -87,6 +87,22 @@ def branch_file(repository: Path, branch: str, path: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def monotonic_aliases(repository: Path, branch: str, identifier: str, aliases: list[str]) -> list[str]:
+    """Do not let a delayed older patch move a minor alias backward."""
+    inventory_text = branch_file(repository, branch, "versions.json")
+    if not inventory_text:
+        return aliases
+    requested = version_tuple(identifier)
+    inventory = json.loads(inventory_text)
+    holders = {
+        alias: version_tuple(entry["version"])
+        for entry in inventory
+        if STABLE_VERSION.fullmatch(entry["version"])
+        for alias in entry.get("aliases", [])
+    }
+    return [alias for alias in aliases if alias not in holders or holders[alias] <= requested]
+
+
 def redirect_document(target: str) -> str:
     encoded = json.dumps(target)
     escaped = escape(target, quote=True)
@@ -155,6 +171,7 @@ def publish_site(
         # Automated publication is append-only. Intentional corrections to an
         # existing snapshot go through review in the deployment repository.
         version_tuple(identifier)
+        aliases = monotonic_aliases(repository, branch, identifier, aliases)
         deployed = deployed_tree_digest(repository, branch, identifier)
         if deployed:
             if deployed != tree_digest(site):

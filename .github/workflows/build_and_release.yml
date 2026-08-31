@@ -134,11 +134,36 @@ jobs:
           (cd "$RUNNER_TEMP" && python -c 'import dspy; assert dspy.PythonInterpreter().execute("6 * 7") == 42')
           deactivate
           rm -r test_before_pypi
+      - name: Preserve the exact release wheel for documentation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dspy-release-wheel
+          path: dist/*.whl
+          if-no-files-found: error
       - name: Publish distribution 📦 to PyPI (dspy)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           attestations: false
-      # Publish to dspy-ai
+
+  build-and-publish-dspy-ai:
+    needs: [extract-tag, build-and-publish-pypi]
+    if: github.repository_owner == 'stanfordnlp'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python3 -m pip install --upgrade twine build
       - name: Update package name in pyproject.toml
         run: sed -i '/#replace_package_name_marker/{n;s/name *= *"[^"]*"/name="dspy-ai"/;}' .github/.internal_dspyai/pyproject.toml
       - name: Update version for dspy-ai release
@@ -158,8 +183,133 @@ jobs:
         with:
           attestations: false
           packages-dir: .github/.internal_dspyai/dist/
-  open-main-version-bump-pr:
+
+  release-docs:
     needs: [extract-tag, build-and-publish-pypi]
+    if: github.repository_owner == 'stanfordnlp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: main
+          fetch-depth: 0
+      - name: Check whether this is a stable documentation release
+        id: stable
+        env:
+          VERSION: ${{ needs.extract-tag.outputs.version }}
+        run: |
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && (( ${VERSION%%.*} >= 3 )); then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out tagged documentation source
+        if: steps.stable.outputs.publish == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.extract-tag.outputs.version }}
+          fetch-depth: 0
+          path: release-source
+      - name: Set up Python 3.11
+        if: steps.stable.outputs.publish == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Download exact production wheel
+        if: steps.stable.outputs.publish == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: dspy-release-wheel
+          path: release-wheel
+      - name: Install documentation dependencies and release wheel
+        if: steps.stable.outputs.publish == 'true'
+        run: |
+          grep -v 'github.com/stanfordnlp/dspy' docs/requirements.txt > "$RUNNER_TEMP/docs-requirements.txt"
+          python -m pip install -r "$RUNNER_TEMP/docs-requirements.txt" release-wheel/*.whl
+      - name: Verify API introspection uses the release wheel
+        if: steps.stable.outputs.publish == 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH PYTHONSAFEPATH=1 python -P - <<'PY'
+          import site
+          from pathlib import Path
+
+          import dspy
+
+          module = Path(dspy.__file__).resolve()
+          site_packages = [Path(root).resolve() for root in site.getsitepackages()]
+          if not any(module.is_relative_to(root) for root in site_packages):
+              raise SystemExit(f"DSPy resolved outside site-packages: {module}")
+          print(f"DSPy API source: {module}")
+          PY
+      - name: Build immutable release documentation
+        if: steps.stable.outputs.publish == 'true'
+        env:
+          VERSION: ${{ needs.extract-tag.outputs.version }}
+        run: |
+          cd "$RUNNER_TEMP"
+          env PYTHONPATH="$GITHUB_WORKSPACE/docs/scripts" PYTHONSAFEPATH=1 python -P \
+            "$GITHUB_WORKSPACE/docs/scripts/build_docs.py" release \
+            --config "$GITHUB_WORKSPACE/release-source/docs/mkdocs.yml" \
+            --output "$GITHUB_WORKSPACE/release-site" \
+            --version "$VERSION" \
+            --artifact "$GITHUB_WORKSPACE"/release-wheel/*.whl \
+            --package-source workflow-wheel \
+            --renderer zensical
+      - name: Check out documentation deployment
+        if: steps.stable.outputs.publish == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: krypticmouse/dspy-docs
+          ref: master
+          path: docs-deployment
+          persist-credentials: false
+          token: ${{ secrets.GH_PAT }} # zizmor: ignore[secrets-outside-env]
+      - name: Publish immutable release documentation
+        if: steps.stable.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          VERSION: ${{ needs.extract-tag.outputs.version }}
+        run: |
+          gh auth setup-git
+          git -C docs-deployment config user.name github-actions
+          git -C docs-deployment config user.email github-actions@github.com
+          for attempt in 1 2 3; do
+            git -C docs-deployment fetch origin master
+            git -C docs-deployment reset --hard origin/master
+            python - <<'PY'
+          import json
+          import subprocess
+
+          inventory = json.loads(subprocess.check_output(
+              ["git", "-C", "docs-deployment", "show", "HEAD:versions.json"], text=True
+          ))
+          current = next((entry for entry in inventory if entry["version"] == "current"), None)
+          if not current or current.get("properties", {}).get("renderer") != "zensical":
+              raise SystemExit("Refusing release publication until reviewed Zensical Current is live")
+          PY
+            python docs/scripts/publish_versioned_docs.py \
+              --repository docs-deployment \
+              --site release-site \
+              --identifier "$VERSION" \
+              --alias "${VERSION%.*}" \
+              --renderer zensical \
+              --package-source workflow-wheel \
+              --branch master
+            if git -C docs-deployment push origin master; then
+              exit 0
+            fi
+            sleep $((2 ** attempt + RANDOM % 5))
+          done
+          echo "::error::Documentation deployment changed repeatedly; rerun this release job"
+          exit 1
+
+  open-main-version-bump-pr:
+    needs: [extract-tag, build-and-publish-pypi, build-and-publish-dspy-ai]
     if: github.repository_owner == 'stanfordnlp'
     runs-on: ubuntu-latest
     permissions:

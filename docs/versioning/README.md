@@ -36,6 +36,26 @@ redirect pages such as `/api/` → `/current/api/`, and each build scopes
 hand-authored root-relative links to its own version so an old page cannot
 silently jump into Current. Query strings and fragments survive redirects.
 
+## Production publication
+
+Current publication follows the renderer state described above. Release
+publication fails closed unless production's Mike metadata identifies Zensical
+as the reviewed Current renderer.
+
+After a stable `dspy` wheel reaches PyPI, the release workflow preserves that
+exact wheel, builds `/X.Y.Z/` from the tag, and publishes it through Mike. The
+`dspy-ai` compatibility package publishes in a separate downstream job, so its
+failure cannot suppress documentation for an already-published `dspy` wheel.
+Release-tag jobs never use GitHub's lossy pending-concurrency slot. Mutable
+Current keeps latest-wins serialization because a newer `main` build includes
+the superseded commit. Deployment writes retry optimistic Git pushes; every
+release rechecks the Zensical promotion marker after refetching,
+and a delayed older patch cannot move an `/X.Y/` alias backward.
+
+Corrections and rollbacks use reviewed pull requests in the deployment
+repository. Restore a known-good tree with a new commit rather than rewriting
+production history.
+
 ## Historical fidelity
 
 Versions 3.0 through 3.3 use the documentation source and Material

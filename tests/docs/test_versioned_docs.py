@@ -139,6 +139,30 @@ def test_mike_preserves_patches_and_moves_minor_redirect(tmp_path):
 
 
 @requires_mike
+def test_delayed_older_patch_does_not_move_minor_redirect_backward(tmp_path):
+    repository = make_repository(tmp_path)
+    newest = make_site(tmp_path / "newest", "3.0.1")
+    delayed = make_site(tmp_path / "delayed", "3.0.0")
+
+    for version, site in (("3.0.1", newest), ("3.0.0", delayed)):
+        publish_site(
+            repository=repository,
+            site=site,
+            identifier=version,
+            title=version,
+            aliases=["3.0"],
+            renderer="zensical",
+            package_source="workflow-wheel",
+        )
+
+    alias = branch_file(repository, "versioned-docs", "3.0/guide/index.html")
+    assert "../../3.0.1/guide/" in alias
+    inventory = json.loads(branch_file(repository, "versioned-docs", "versions.json"))
+    aliases = {entry["version"]: entry["aliases"] for entry in inventory}
+    assert aliases == {"3.0.0": [], "3.0.1": ["3.0"]}
+
+
+@requires_mike
 def test_mike_refuses_to_replace_an_immutable_snapshot(tmp_path):
     repository = make_repository(tmp_path)
     site = make_site(tmp_path / "first", "original")
