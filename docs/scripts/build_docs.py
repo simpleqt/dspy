@@ -58,9 +58,6 @@ def patched_config(config: Path, identifier: str, *, edit_ref: str | None = None
         text, edit_count = re.subn(r"(?m)^edit_uri:\s*.*$", f"edit_uri: blob/{edit_ref}/docs/docs/", text, count=1)
         if edit_count != 1:
             raise RuntimeError(f"could not patch edit_uri in {config}")
-        # Release API reference must import the installed release artifact, not
-        # preferentially resolve the source checkout through mkdocstrings.
-        text = re.sub(r'(?m)^[ \t]+paths:\s*\[\s*["\x27]?\.\.["\x27]?\s*\][ \t]*\n', "", text, count=1)
     if not re.search(r"(?m)^\s+provider:\s*mike\s*$", text):
         version_config = "    version:\n        provider: mike\n        alias: true\n"
         text, extra_count = re.subn(r"(?m)^extra:\s*$", f"extra:\n{version_config}", text, count=1)
@@ -143,14 +140,12 @@ def installed_packages() -> dict[str, str]:
     )
 
 
-def renderer_version(renderer: str) -> str:
-    package = "mkdocs-material" if renderer == "material" else "zensical"
-    return importlib.metadata.version(package)
+def renderer_version() -> str:
+    return importlib.metadata.version("zensical")
 
 
-def validate_release_site(site: Path, config: Path, version: str, renderer: str) -> None:
-    search_index = site / "search" / "search_index.json" if renderer == "material" else site / "search.json"
-    expected = (site / "index.html", site / "api" / "index.html", search_index)
+def validate_release_site(site: Path, config: Path, version: str) -> None:
+    expected = (site / "index.html", site / "api" / "index.html", site / "search.json", site / "llms.txt")
     missing = [str(path.relative_to(site)) for path in expected if not path.exists()]
     if missing:
         raise RuntimeError(f"release site is missing required output: {', '.join(missing)}")
@@ -173,13 +168,9 @@ def validate_release_site(site: Path, config: Path, version: str, renderer: str)
     if missing_notebooks:
         raise RuntimeError(f"notebooks were not rendered: {', '.join(missing_notebooks)}")
 
-    config_text = config.read_text()
-    if re.search(r"(?m)^\s*- social\s*$", config_text):
-        cards = site / "assets" / "images" / ("social" if renderer == "material" else "social-zensical")
-        if not cards.exists() or not any(cards.rglob("*.png")) or 'property="og:image"' not in home:
-            raise RuntimeError("social cards or Open Graph metadata were not generated")
-    if re.search(r"(?m)^\s*- llmstxt:\s*$", config_text) and not (site / "llms.txt").exists():
-        raise RuntimeError("mkdocs-llmstxt was configured but llms.txt was not generated")
+    cards = site / "assets" / "images" / "social-zensical"
+    if not cards.exists() or not any(cards.rglob("*.png")) or 'property="og:image"' not in home:
+        raise RuntimeError("social cards or Open Graph metadata were not generated")
 
     try:
         dspy_version = importlib.metadata.version("dspy")
@@ -193,7 +184,6 @@ def build(
     *,
     config: Path,
     output: Path,
-    renderer: str,
     version: str | None = None,
     artifact: Path | None = None,
     package_source: str | None = None,
@@ -203,29 +193,7 @@ def build(
     identifier = version or "current"
     effective_config = patched_config(config, identifier, edit_ref=version)
     try:
-        if renderer == "material":
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "mkdocs",
-                    "build",
-                    "--clean",
-                    "--config-file",
-                    str(effective_config),
-                    "--site-dir",
-                    str(output),
-                ],
-                cwd=config.parent,
-                check=True,
-            )
-        else:
-            build_zensical_site(
-                config=effective_config,
-                output=output,
-                python=Path(sys.executable),
-                introspect_installed_package=version is not None,
-            )
+        build_zensical_site(config=effective_config, output=output, python=Path(sys.executable))
     finally:
         effective_config.unlink(missing_ok=True)
 
@@ -234,7 +202,7 @@ def build(
             raise ValueError("release builds require an artifact and package source")
     scope_root_relative_urls(output, identifier)
     if version:
-        validate_release_site(output, config, version, renderer)
+        validate_release_site(output, config, version)
     install_shared_header_styles(output)
     optimization = optimize_site(output)
     if version:
@@ -245,8 +213,8 @@ def build(
             "source_tag": version,
             "source_commit": source_commit,
             "source_commit_time": git_value(repository, "show", "-s", "--format=%cI", source_commit),
-            "renderer": renderer,
-            "renderer_version": renderer_version(renderer),
+            "renderer": "zensical",
+            "renderer_version": renderer_version(),
             "package_source": package_source,
             "package_artifact": artifact.name,
             "package_sha256": sha256(artifact),
@@ -257,7 +225,6 @@ def build(
                 "The renderer's Mike version selector is enabled in a transient build configuration.",
                 "Build provenance metadata added under _meta/build.json.",
                 "Generated HTML is minified and source maps are omitted from production snapshots.",
-                "Original deployment dependencies were not locked; non-DSPy dependencies are reconstructed as of the tag date.",
             ],
         }
         metadata_dir = output / "_meta"
@@ -270,7 +237,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("mode", choices=("current", "release"))
     parser.add_argument("--config", type=Path, default=Path("mkdocs.yml"))
     parser.add_argument("--output", type=Path, default=Path("site"))
-    parser.add_argument("--renderer", choices=("material", "zensical"), default="material")
     parser.add_argument("--version", type=stable_version)
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--package-source", choices=("pypi-wheel", "workflow-wheel", "tag-built-wheel"))
@@ -285,7 +251,6 @@ def main() -> None:
     build(
         config=args.config.resolve(),
         output=args.output,
-        renderer=args.renderer,
         version=args.version if args.mode == "release" else None,
         artifact=args.artifact.resolve() if args.artifact else None,
         package_source=args.package_source,

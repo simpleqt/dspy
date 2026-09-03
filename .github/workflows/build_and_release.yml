@@ -194,7 +194,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          ref: main
           fetch-depth: 0
       - name: Check whether this is a stable documentation release
         id: stable
@@ -206,14 +205,6 @@ jobs:
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Check out tagged documentation source
-        if: steps.stable.outputs.publish == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-          ref: ${{ needs.extract-tag.outputs.version }}
-          fetch-depth: 0
-          path: release-source
       - name: Set up Python 3.11
         if: steps.stable.outputs.publish == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -227,9 +218,7 @@ jobs:
           path: release-wheel
       - name: Install documentation dependencies and release wheel
         if: steps.stable.outputs.publish == 'true'
-        run: |
-          grep -v 'github.com/stanfordnlp/dspy' docs/requirements.txt > "$RUNNER_TEMP/docs-requirements.txt"
-          python -m pip install -r "$RUNNER_TEMP/docs-requirements.txt" release-wheel/*.whl
+        run: python -m pip install -r docs/requirements.txt release-wheel/*.whl
       - name: Verify API introspection uses the release wheel
         if: steps.stable.outputs.publish == 'true'
         run: |
@@ -254,12 +243,11 @@ jobs:
           cd "$RUNNER_TEMP"
           env PYTHONPATH="$GITHUB_WORKSPACE/docs/scripts" PYTHONSAFEPATH=1 python -P \
             "$GITHUB_WORKSPACE/docs/scripts/build_docs.py" release \
-            --config "$GITHUB_WORKSPACE/release-source/docs/mkdocs.yml" \
+            --config "$GITHUB_WORKSPACE/docs/mkdocs.yml" \
             --output "$GITHUB_WORKSPACE/release-site" \
             --version "$VERSION" \
             --artifact "$GITHUB_WORKSPACE"/release-wheel/*.whl \
-            --package-source workflow-wheel \
-            --renderer zensical
+            --package-source workflow-wheel
       - name: Check out documentation deployment
         if: steps.stable.outputs.publish == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -281,17 +269,6 @@ jobs:
           for attempt in 1 2 3; do
             git -C docs-deployment fetch origin master
             git -C docs-deployment reset --hard origin/master
-            python - <<'PY'
-          import json
-          import subprocess
-
-          inventory = json.loads(subprocess.check_output(
-              ["git", "-C", "docs-deployment", "show", "HEAD:versions.json"], text=True
-          ))
-          current = next((entry for entry in inventory if entry["version"] == "current"), None)
-          if not current or current.get("properties", {}).get("renderer") != "zensical":
-              raise SystemExit("Refusing release publication until reviewed Zensical Current is live")
-          PY
             python docs/scripts/publish_versioned_docs.py \
               --repository docs-deployment \
               --site release-site \
@@ -299,7 +276,8 @@ jobs:
               --alias "${VERSION%.*}" \
               --renderer zensical \
               --package-source workflow-wheel \
-              --branch master
+              --branch master \
+              --require-current-renderer zensical
             if git -C docs-deployment push origin master; then
               exit 0
             fi

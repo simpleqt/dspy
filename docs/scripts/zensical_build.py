@@ -21,65 +21,13 @@ from urllib.parse import urljoin
 
 import yaml
 
-UNSUPPORTED_PLUGINS = {"social", "mkdocs-jupyter", "redirects", "llmstxt"}
-
-
-class TaggedScalar(str):
-    """A YAML scalar whose application-specific tag must survive a round trip."""
-
-    def __new__(cls, value: str, tag: str):
-        scalar = super().__new__(cls, value)
-        scalar.tag = tag
-        return scalar
-
-
-class ConfigLoader(yaml.SafeLoader):
-    pass
-
-
-class ConfigDumper(yaml.SafeDumper):
-    pass
-
-
-def _load_python_name(loader: ConfigLoader, suffix: str, node: yaml.Node) -> TaggedScalar:
-    return TaggedScalar(loader.construct_scalar(node), f"tag:yaml.org,2002:python/name:{suffix}")
-
-
-def _dump_tagged_scalar(dumper: ConfigDumper, value: TaggedScalar) -> yaml.Node:
-    return dumper.represent_scalar(value.tag, str(value))
-
-
-ConfigLoader.add_multi_constructor("tag:yaml.org,2002:python/name:", _load_python_name)
-ConfigDumper.add_representer(TaggedScalar, _dump_tagged_scalar)
-
 
 def load_config(path: Path) -> dict[str, object]:
-    return dict(yaml.load(path.read_text(), Loader=ConfigLoader))
+    return dict(yaml.safe_load(path.read_text()))
 
 
 def write_config(path: Path, config: dict[str, object]) -> None:
-    path.write_text(yaml.dump(config, Dumper=ConfigDumper, sort_keys=False, allow_unicode=True))
-
-
-def plugin_name(plugin: object) -> str:
-    return plugin if isinstance(plugin, str) else str(next(iter(plugin)))
-
-
-def plugin_settings(config: dict[str, object], name: str) -> dict[str, object]:
-    for plugin in config.get("plugins", []):
-        if isinstance(plugin, dict) and name in plugin:
-            return dict(plugin[name] or {})
-    return {}
-
-
-def replace_notebook_paths(value: object) -> object:
-    if isinstance(value, str):
-        return value.removesuffix(".ipynb") + ".md" if value.endswith(".ipynb") else value
-    if isinstance(value, list):
-        return [replace_notebook_paths(item) for item in value]
-    if isinstance(value, dict):
-        return {key: replace_notebook_paths(item) for key, item in value.items()}
-    return value
+    path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
 
 
 def nav_entries(value: object) -> dict[str, str]:
@@ -113,64 +61,17 @@ def fetch_stats(project: Path) -> dict[str, object]:
         raise RuntimeError(f"cannot load {hook}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    if hasattr(module, "fetch_stats"):
-        return dict(module.fetch_stats())
-
-    # DSPy 3.3.0 and 3.3.1 expose only the original MkDocs hook contract.
-    config: dict[str, object] = {"extra": {}}
-    configured = module.on_config(config) or config
-    stats = configured.get("extra", {}).get("stats")
-    if not isinstance(stats, dict):
-        raise RuntimeError(f"{hook} did not provide extra.stats")
-    return stats
+    if not hasattr(module, "fetch_stats"):
+        raise RuntimeError(f"{hook} does not define fetch_stats()")
+    return dict(module.fetch_stats())
 
 
-def prepare_config(
-    config: dict[str, object],
-    repository: Path,
-    stats: dict[str, object],
-    *,
-    introspect_installed_package: bool = False,
-) -> dict[str, object]:
+def prepare_config(config: dict[str, object], stats: dict[str, object]) -> dict[str, object]:
     prepared = dict(config)
-    prepared.pop("hooks", None)
     prepared["site_dir"] = "site"
-    prepared["nav"] = replace_notebook_paths(prepared.get("nav", []))
-
-    theme = dict(prepared.get("theme", {}))
-    theme.pop("name", None)
-    theme["variant"] = "classic"
-    prepared["theme"] = theme
-
     extra = dict(prepared.get("extra", {}))
     extra["stats"] = stats
-    extra["version"] = {"provider": "mike", "alias": True}
     prepared["extra"] = extra
-
-    extensions = list(prepared.get("markdown_extensions", []))
-    if "md_in_html" not in extensions:
-        extensions.insert(0, "md_in_html")
-    prepared["markdown_extensions"] = extensions
-
-    plugins = []
-    for plugin in prepared.get("plugins", []):
-        name = plugin_name(plugin)
-        if name in UNSUPPORTED_PLUGINS:
-            continue
-        if name == "mkdocstrings" and isinstance(plugin, dict):
-            plugin = dict(plugin)
-            settings = dict(plugin[name])
-            handlers = dict(settings.get("handlers", {}))
-            python = dict(handlers.get("python", {}))
-            if introspect_installed_package:
-                python.pop("paths", None)
-            else:
-                python["paths"] = [str(repository)]
-            handlers["python"] = python
-            settings["handlers"] = handlers
-            plugin[name] = settings
-        plugins.append(plugin)
-    prepared["plugins"] = plugins
     return prepared
 
 
@@ -395,16 +296,16 @@ def build_zensical_site(
     python: Path = Path(sys.executable),
     stats: dict[str, object] | None = None,
     keep_project: Path | None = None,
-    introspect_installed_package: bool = False,
 ) -> set[str]:
     source_project = config.parent
-    repository = source_project.parent
     source_config = load_config(config)
-    redirects = plugin_settings(source_config, "redirects").get("redirect_maps", {})
-    llms = plugin_settings(source_config, "llmstxt")
+    build_config = load_config(source_project / "build.yml")
+    redirects = dict(build_config["redirects"])
+    llms = dict(build_config["llms"])
     source_docs = source_project / str(source_config.get("docs_dir", "docs"))
     titles = page_titles(source_config, source_docs)
-    stats = stats or fetch_stats(source_project)
+    if stats is None:
+        stats = fetch_stats(source_project)
 
     temporary = None if keep_project else tempfile.TemporaryDirectory(prefix="dspy-zensical-build-")
     project = keep_project.resolve() if keep_project else Path(temporary.name) / "project"
@@ -413,14 +314,7 @@ def build_zensical_site(
         source_project, project, ignore=shutil.ignore_patterns("site", ".cache", "__pycache__", ".zensical-*")
     )
     try:
-        tabs_override = project / "overrides" / "partials" / "tabs.html"
-        tabs_override.unlink(missing_ok=True)
-        prepared = prepare_config(
-            source_config,
-            repository,
-            stats,
-            introspect_installed_package=introspect_installed_package,
-        )
+        prepared = prepare_config(source_config, stats)
         prepared_config = project / "zensical.generated.yml"
         write_config(prepared_config, prepared)
         notebook_routes = convert_notebooks(project / str(prepared.get("docs_dir", "docs")))

@@ -14,7 +14,7 @@ from html import escape
 from pathlib import Path
 
 STABLE_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-DEFAULT_BRANCH = "versioned-docs"
+DEFAULT_BRANCH = "master"
 LEGACY_REDIRECTS_MANIFEST = ".dspy-legacy-redirects.json"
 HOST_CONFIG = (
     json.dumps(
@@ -85,6 +85,21 @@ def branch_file(repository: Path, branch: str, path: str) -> str | None:
         text=True,
     )
     return result.stdout if result.returncode == 0 else None
+
+
+def require_current_renderer(repository: Path, branch: str, expected: str) -> None:
+    """Require the reviewed deployment migration before steady-state writes."""
+    inventory_text = branch_file(repository, branch, "versions.json")
+    if not inventory_text:
+        raise RuntimeError("production versions.json is missing; complete the reviewed deployment migration first")
+    inventory = json.loads(inventory_text)
+    current = next((entry for entry in inventory if entry.get("version") == "current"), None)
+    renderer = current.get("properties", {}).get("renderer") if current else None
+    if renderer != expected:
+        raise RuntimeError(
+            f"production Current renderer is {renderer!r}, expected {expected!r}; "
+            "complete the reviewed renderer migration first"
+        )
 
 
 def monotonic_aliases(repository: Path, branch: str, identifier: str, aliases: list[str]) -> list[str]:
@@ -164,9 +179,12 @@ def publish_site(
     branch: str = DEFAULT_BRANCH,
     mutable: bool = False,
     default: bool = False,
+    required_current_renderer: str | None = None,
 ) -> bool:
     from mike import commands, git_utils
 
+    if required_current_renderer:
+        require_current_renderer(repository, branch, required_current_renderer)
     if not mutable:
         # Automated publication is append-only. Intentional corrections to an
         # existing snapshot go through review in the deployment repository.
@@ -224,6 +242,7 @@ def main() -> None:
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--mutable", action="store_true")
     parser.add_argument("--default", action="store_true")
+    parser.add_argument("--require-current-renderer", choices=("material", "zensical"))
     args = parser.parse_args()
     changed = publish_site(
         repository=args.repository.resolve(),
@@ -236,6 +255,7 @@ def main() -> None:
         branch=args.branch,
         mutable=args.mutable,
         default=args.default,
+        required_current_renderer=args.require_current_renderer,
     )
     print("published" if changed else "already published")
 

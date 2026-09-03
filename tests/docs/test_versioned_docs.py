@@ -6,7 +6,6 @@ import subprocess
 import pytest
 
 from docs.scripts.build_docs import optimize_site, patched_config, scope_root_relative_urls, stable_version
-from docs.scripts.detect_versioned_deployment import deployment_state, is_versioned_deployment
 from docs.scripts.publish_versioned_docs import publish_site, version_tuple
 
 requires_mike = pytest.mark.skipif(importlib.util.find_spec("mike") is None, reason="Mike is a docs-only dependency")
@@ -52,9 +51,7 @@ def test_stable_versions_reject_prereleases_and_old_major_versions():
 def test_release_config_enables_mike_and_scopes_urls(tmp_path):
     config = tmp_path / "mkdocs.yml"
     config.write_text(
-        "site_url: https://dspy.ai/\nedit_uri: blob/main/docs/docs/\nsite_name: DSPy\n"
-        'plugins:\n    - mkdocstrings:\n        handlers:\n            python:\n                paths: [".."]\n'
-        "extra:\n    social: []\n"
+        "site_url: https://dspy.ai/\nedit_uri: blob/main/docs/docs/\nsite_name: DSPy\nextra:\n    social: []\n"
     )
 
     result = patched_config(config, "3.2.1", edit_ref="3.2.1")
@@ -62,7 +59,6 @@ def test_release_config_enables_mike_and_scopes_urls(tmp_path):
         text = result.read_text()
         assert "site_url: https://dspy.ai/3.2.1/" in text
         assert "edit_uri: blob/3.2.1/docs/docs/" in text
-        assert 'paths: [".."]' not in text
         assert "provider: mike" in text
         assert "alias: true" in text
     finally:
@@ -127,12 +123,12 @@ def test_mike_preserves_patches_and_moves_minor_redirect(tmp_path):
             package_source="pypi-wheel",
         )
 
-    assert "3.0.0" in branch_file(repository, "versioned-docs", "3.0.0/index.html")
-    assert "3.0.1" in branch_file(repository, "versioned-docs", "3.0.1/index.html")
-    alias = branch_file(repository, "versioned-docs", "3.0/guide/index.html")
+    assert "3.0.0" in branch_file(repository, "master", "3.0.0/index.html")
+    assert "3.0.1" in branch_file(repository, "master", "3.0.1/index.html")
+    alias = branch_file(repository, "master", "3.0/guide/index.html")
     assert "../../3.0.1/guide/" in alias
 
-    inventory = json.loads(branch_file(repository, "versioned-docs", "versions.json"))
+    inventory = json.loads(branch_file(repository, "master", "versions.json"))
     assert [entry["version"] for entry in inventory] == ["3.0.1", "3.0.0"]
     assert inventory[0]["aliases"] == ["3.0"]
     assert inventory[1]["aliases"] == []
@@ -155,9 +151,9 @@ def test_delayed_older_patch_does_not_move_minor_redirect_backward(tmp_path):
             package_source="workflow-wheel",
         )
 
-    alias = branch_file(repository, "versioned-docs", "3.0/guide/index.html")
+    alias = branch_file(repository, "master", "3.0/guide/index.html")
     assert "../../3.0.1/guide/" in alias
-    inventory = json.loads(branch_file(repository, "versioned-docs", "versions.json"))
+    inventory = json.loads(branch_file(repository, "master", "versions.json"))
     aliases = {entry["version"]: entry["aliases"] for entry in inventory}
     assert aliases == {"3.0.0": [], "3.0.1": ["3.0"]}
 
@@ -201,43 +197,17 @@ def test_mike_current_is_mutable_and_default(tmp_path):
 
     publish_site(**arguments)
     (site / "index.html").write_text("second")
+    arguments["required_current_renderer"] = "zensical"
     publish_site(**arguments)
 
-    assert branch_file(repository, "versioned-docs", "current/index.html") == "second"
-    assert "url=current/" in branch_file(repository, "versioned-docs", "index.html")
-    assert 'location.replace("/current/guide/"' in branch_file(repository, "versioned-docs", "guide/index.html")
-    assert json.loads(branch_file(repository, "versioned-docs", "vercel.json"))["framework"] is None
+    assert branch_file(repository, "master", "current/index.html") == "second"
+    assert "url=current/" in branch_file(repository, "master", "index.html")
+    assert 'location.replace("/current/guide/"' in branch_file(repository, "master", "guide/index.html")
+    assert json.loads(branch_file(repository, "master", "vercel.json"))["framework"] is None
 
-
-@requires_mike
-def test_staged_candidate_does_not_activate_mike_until_promoted(tmp_path):
-    repository = make_repository(tmp_path)
-    site = make_site(tmp_path / "current", "Current")
-    publish_site(
-        repository=repository,
-        site=site,
-        identifier="current",
-        title="Current",
-        aliases=[],
-        renderer="material",
-        package_source="working-tree",
-        mutable=True,
-        default=True,
-    )
-
-    # Bootstrap writes only the candidate branch; production remains legacy.
-    assert not is_versioned_deployment(repository)
-
-    # The reviewed deployment-repository PR promotes the candidate to master.
-    subprocess.run(["git", "checkout", "versioned-docs", "--", "versions.json"], cwd=repository, check=True)
-    assert is_versioned_deployment(repository)
-    assert deployment_state(repository) == (True, "versioned-docs")
-
-    inventory = json.loads((repository / "versions.json").read_text())
-    current = next(entry for entry in inventory if entry["version"] == "current")
-    current["properties"]["renderer"] = "zensical"
-    (repository / "versions.json").write_text(json.dumps(inventory))
-    assert deployment_state(repository) == (True, "master")
+    arguments["required_current_renderer"] = "material"
+    with pytest.raises(RuntimeError, match="expected 'material'"):
+        publish_site(**arguments)
 
 
 @requires_mike
@@ -265,7 +235,7 @@ def test_mike_removes_stale_unversioned_redirects(tmp_path):
     publish_site(**arguments)
 
     result = subprocess.run(
-        ["git", "cat-file", "-e", "versioned-docs:removed/index.html"],
+        ["git", "cat-file", "-e", "master:removed/index.html"],
         cwd=repository,
         capture_output=True,
     )

@@ -1,3 +1,0 @@
--r ../requirements.txt
-
-playwright==1.62.0
